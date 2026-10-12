@@ -13,11 +13,13 @@ cd xrayto3D-benchmark
   --batch_size 2 --lr 0.0002 --steps 200 \
   --accelerator cpu --precision 32 --num_workers 0 --logger csv \
   --output_dir ../data/ear/pilot_runs \
+  --checkpoint_dir ../data/checkpoint/ear \
   --load_model_from '/Volumes/Extreme SSD/experiment_log_dir/femur/UNet/checkpoints/epoch=38-step=3822-val_dice=0.93.ckpt'
 ```
 
-Outputs: CSV metrics, hyperparameters, best/last checkpoints, test metrics,
-and NIfTI predictions under `data/ear/pilot_runs/training/version_*/`.
+Outputs: CSV metrics, hyperparameters, test metrics, and NIfTI predictions
+under `data/ear/pilot_runs/training/version_*/`.
+Best/last checkpoints go to `data/checkpoint/ear/version_*/`.
 Predictions use the transformed target grid and its physical affine.
 
 For AWS: use `--accelerator cuda --gpu 0`, a suitable batch size, and local

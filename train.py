@@ -75,6 +75,8 @@ def parse_training_arguments():
     parser.add_argument("--tags", nargs="*", default=[])
     parser.add_argument("--logger", choices=["csv", "wandb"], default="wandb")
     parser.add_argument("--output_dir", default="runs")
+    parser.add_argument("--checkpoint_dir", default=None,
+                        help="Checkpoint root; each logger version gets its own subdirectory")
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--wandb-project", default="2d-3d-benchmark")
 
@@ -275,7 +277,8 @@ if __name__ == "__main__":
         else "epoch={epoch}-step={step}-val_dice={val/dice:.2f}"
     )
     checkpoint_callback = ModelCheckpoint(
-        # dirpath=f'runs/{WANDB_PROJECT}/',
+        dirpath=str(Path(args.checkpoint_dir) / f"version_{wandb_logger.version}")
+        if args.checkpoint_dir else None,
         monitor="val/loss",
         mode="min",
         save_last=True,
