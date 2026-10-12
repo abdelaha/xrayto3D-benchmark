@@ -109,6 +109,7 @@ class BaseExperiment(pl.LightningModule):
         out["pred"] = pred
         out["gt"] = output
         out["seg_meta_dict"] = seg_meta_dict
+        out["target_affine"] = batch[2]["seg"].affine
 
         return out
 
@@ -117,6 +118,8 @@ class BaseExperiment(pl.LightningModule):
 
     def log_3d_images(self, predictions, label):
         """log projections of 3d volume into wandb"""
+        if wandb.run is None:
+            return
         projections = [reproject(volume.squeeze(), 0) for volume in predictions]
         wandb.log(
             {

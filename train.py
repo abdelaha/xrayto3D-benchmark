@@ -9,6 +9,7 @@ script to train various architectures on given dataset
 (defined by training and validation filepaths).
 """
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -17,10 +18,12 @@ import monai.data.meta_obj as monai_meta_obj
 import numpy as np
 import pytorch_lightning as pl
 import torch
+from monai.data import list_data_collate
 from monai.utils.misc import set_determinism
 from pytorch_lightning import seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers.wandb import WandbLogger
+from pytorch_lightning.loggers import CSVLogger
 from torch.optim import Adam
 from torch.utils.data.dataloader import DataLoader
 
@@ -55,6 +58,7 @@ def parse_training_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("trainpaths")
     parser.add_argument("valpaths")
+    parser.add_argument("--testpaths", default=None)
     parser.add_argument("--model_name")
     parser.add_argument("--loss")
     parser.add_argument("--size", type=int)
@@ -68,7 +72,10 @@ def parse_training_arguments():
     parser.add_argument("--visualize", action="store_true", default=False)
     parser.add_argument("--debug", default=False, action="store_true")
 
-    parser.add_argument("--tags", nargs="*")
+    parser.add_argument("--tags", nargs="*", default=[])
+    parser.add_argument("--logger", choices=["csv", "wandb"], default="wandb")
+    parser.add_argument("--output_dir", default="runs")
+    parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--wandb-project", default="2d-3d-benchmark")
 
     parser.add_argument("--lambda_bce", default=1.0)
@@ -114,12 +121,16 @@ def update_args(args):
     # ), f"({args.size},{args.res}) does not match ({orig_size},{orig_res})"
     args.experiment_name = model_experiment_dict[args.model_name]
 
-    args.precision = 16 if args.gpu == 0 else 32  # use bfloat16 on RTX 3090
+    if args.accelerator == "cuda":
+        args.accelerator = "gpu"
+    if args.accelerator in ("cpu", "mps") and args.precision != 32:
+        raise ValueError("Use --precision 32 for CPU/MPS runs")
 
 
 if __name__ == "__main__":
     args = parse_training_arguments()
     update_args(args)
+    torch.set_num_threads(args.threads)
 
     # print commandline arguments: all print outputs are logged by wandb
     print(sys.argv)
@@ -151,7 +162,8 @@ if __name__ == "__main__":
         batch_size=BATCH_SIZE,
         num_workers=args.num_workers,
         shuffle=True,
-        drop_last=True,
+        drop_last=False,
+        collate_fn=list_data_collate,
     )
     val_loader = DataLoader(
         get_dataset(args.valpaths, transforms=train_transforms),
@@ -159,6 +171,7 @@ if __name__ == "__main__":
         num_workers=args.num_workers,
         shuffle=False,
         drop_last=False,
+        collate_fn=list_data_collate,
     )
 
     model = get_model(
@@ -170,7 +183,7 @@ if __name__ == "__main__":
         image_size=IMG_SIZE,
         lambda_bce=args.lambda_bce,
         lambda_dice=args.lambda_dice,
-        device=f"cuda:{args.gpu}",
+        device=f"cuda:{args.gpu}" if args.accelerator == "gpu" else args.accelerator,
     )
     optimizer = Adam(model.parameters(), lr)
 
@@ -183,7 +196,7 @@ if __name__ == "__main__":
     if experiment_name == TLPredictorExperiment.__name__:
         ae_model = get_model(model_name=CustomAutoEncoder.__name__, image_size=IMG_SIZE)
         if Path(args.load_autoencoder_from).exists():
-            checkpoint = torch.load(args.load_autoencoder_from)
+            checkpoint = torch.load(args.load_autoencoder_from, map_location="cpu", weights_only=False)
         else:
             raise ValueError(
                 f"autoencoder checkpoint {args.load_autoencoder_from} does not exist"
@@ -200,8 +213,11 @@ if __name__ == "__main__":
 
     if args.load_model_from:
         if Path(args.load_model_from).exists():
-            checkpoint = torch.load(args.load_model_from)
-            experiment.load_state_dict(checkpoint['state_dict'])
+            checkpoint = torch.load(args.load_model_from, map_location="cpu", weights_only=False)
+            # Transfer model weights, preserving the new loss and fresh optimizer.
+            state = {k[len("model."):]: v for k, v in checkpoint["state_dict"].items()
+                     if k.startswith("model.")}
+            model.load_state_dict(state, strict=True)
             print(f'loaded model checkpoint from {args.load_model_from}')
         else:
             raise ValueError(f'could not load model checkpoint from {args.load_model_from}')
@@ -227,13 +243,16 @@ if __name__ == "__main__":
     if args.debug:
         sys.exit()
     # loggers
-    wandb_logger = WandbLogger(
-        save_dir="runs/",
-        project=WANDB_PROJECT,
-        group=WANDB_EXPERIMENT_GROUP,
-        tags=WANDB_TAGS,
-    )
-    wandb_logger.watch(model, log_graph=False)
+    if args.logger == "wandb":
+        wandb_logger = WandbLogger(
+            save_dir=args.output_dir,
+            project=WANDB_PROJECT,
+            group=WANDB_EXPERIMENT_GROUP,
+            tags=WANDB_TAGS,
+        )
+        wandb_logger.watch(model, log_graph=False)
+    else:
+        wandb_logger = CSVLogger(save_dir=args.output_dir, name="training")
     MODEL_CONFIG = get_model_config(model_name, IMG_SIZE)
     # save hyperparameters
     HYPERPARAMS = {
@@ -248,6 +267,7 @@ if __name__ == "__main__":
         "EXPERIMENT_NAME": experiment_name,
     }
     HYPERPARAMS.update(MODEL_CONFIG)
+    experiment.save_hyperparameters(HYPERPARAMS)
     wandb_logger.log_hyperparams(HYPERPARAMS)
     CHECKPOINT_FILENAME = (
         "epoch={epoch}-step={step}-val_loss={val/loss:.2f}"
@@ -267,10 +287,9 @@ if __name__ == "__main__":
         accelerator=args.accelerator,
         precision=args.precision,
         max_epochs=NUM_EPOCHS,
-        devices=[args.gpu],
+        devices=[args.gpu] if args.accelerator == "gpu" else 1,
         deterministic=False,
         log_every_n_steps=1,
-        auto_select_gpus=True,
         logger=[wandb_logger],
         callbacks=[checkpoint_callback],
         enable_progress_bar=True,
@@ -280,4 +299,28 @@ if __name__ == "__main__":
 
     trainer.fit(experiment, train_loader, val_loader)
 
-    wandb.finish()
+    if args.testpaths:
+        import nibabel as nib
+        test_loader = DataLoader(
+            get_dataset(args.testpaths, transforms=train_transforms),
+            batch_size=BATCH_SIZE, num_workers=args.num_workers, shuffle=False,
+            collate_fn=list_data_collate,
+        )
+        # Reload the best saved weights to verify the trained-checkpoint path too.
+        best = checkpoint_callback.best_model_path
+        metrics = trainer.validate(experiment, test_loader, ckpt_path=best)
+        results = trainer.predict(experiment, test_loader, ckpt_path=best)
+        predictions_dir = Path(wandb_logger.log_dir) / "predictions"
+        predictions_dir.mkdir(parents=True, exist_ok=True)
+        index = 0
+        for result in results:
+            for prediction, affine in zip(result["pred"], result["target_affine"]):
+                array = prediction[0].detach().cpu().numpy().astype(np.uint8)
+                nib.save(nib.Nifti1Image(array, affine.detach().cpu().numpy()),
+                         predictions_dir / f"row_{index:04d}_pred.nii.gz")
+                index += 1
+        (predictions_dir.parent / "test_metrics.json").write_text(json.dumps(metrics, indent=2))
+        print(f"Saved {index} predictions to {predictions_dir}")
+
+    if args.logger == "wandb":
+        wandb.finish()

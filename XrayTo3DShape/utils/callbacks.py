@@ -14,7 +14,8 @@ from typing import Any, Optional, Sequence
 import numpy as np
 import torch
 import pytorch_lightning as pl
-from monai.data.nifti_saver import NiftiSaver
+from monai.data import decollate_batch
+from monai.transforms import SaveImage
 from monai.metrics.hausdorff_distance import HausdorffDistanceMetric
 from monai.metrics.meandice import DiceMetric
 from monai.metrics.surface_distance import SurfaceDistanceMetric
@@ -50,7 +51,7 @@ class NiftiPredictionWriter(BasePredictionWriter):
         self.image_size = image_size
         self.resolution = resolution
 
-        self.pred_nifti_saver = NiftiSaver(
+        self.pred_nifti_saver = SaveImage(
             output_dir=self.output_dir,
             output_postfix="pred",
             resample=False,
@@ -58,7 +59,7 @@ class NiftiPredictionWriter(BasePredictionWriter):
             separate_folder=False,
         )
 
-        self.gt_nifti_saver = NiftiSaver(
+        self.gt_nifti_saver = SaveImage(
             output_dir=self.output_dir,
             output_postfix="gt",
             resample=False,
@@ -111,9 +112,11 @@ class NiftiPredictionWriter(BasePredictionWriter):
             original_meta_dict["affine"][:, :, -1]
         )
         if self.save_pred:
-            self.pred_nifti_saver.save_batch(prediction["pred"], metadict)
+            for image, meta in zip(prediction["pred"], decollate_batch(metadict)):
+                self.pred_nifti_saver(image, meta)
         if self.save_gt:
-            self.gt_nifti_saver.save_batch(prediction["gt"], metadict)
+            for image, meta in zip(prediction["gt"], decollate_batch(metadict)):
+                self.gt_nifti_saver(image, meta)
 
 
 class MetricsLogger(BasePredictionWriter):

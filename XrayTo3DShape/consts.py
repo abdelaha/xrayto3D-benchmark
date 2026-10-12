@@ -37,6 +37,7 @@ from .transforms import (
 
 # these dataset were originally defined for (size,resolution)
 anatomy_resolution_dict = {
+    "ear": (64, 0.5),
     "totalseg_femur": (128, 1.0),
     "totalseg_ribs": (320, 1.0),
     "totalseg_hips": (288, 1.0),

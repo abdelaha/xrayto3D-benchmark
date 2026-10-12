@@ -40,7 +40,7 @@ def get_anatomy_from_path(path: str):
         configs/paths/lidc/LIDC-IDRI-DRR-full_train+val.csv -> vertebra
     return "none" if unknown path is provided
     """
-    anatomies = ["rib", "femur", "hip"]
+    anatomies = ["ear", "rib", "femur", "hip"]
     vertebra_dataset = ["verse", "lidc", "rsna", "vertebra"]
     # check if the anatomy is mentioned in the path
     for anat in anatomies:
